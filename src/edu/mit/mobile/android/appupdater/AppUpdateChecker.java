@@ -1,17 +1,17 @@
 package edu.mit.mobile.android.appupdater;
 /*
  * Copyright (C) 2010-2011  MIT Mobile Experience Lab
- * 
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
  * version 2.1 of the License, or (at your option) any later version.
- * 
+ *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  * Lesser General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
@@ -35,21 +35,19 @@ import org.json.JSONObject;
 
 import android.app.AlertDialog.Builder;
 import android.app.Dialog;
-import android.app.Service;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager.NameNotFoundException;
 import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Handler;
-import android.os.IBinder;
 import android.os.Message;
+import android.preference.PreferenceManager;
 import android.util.Log;
-import edu.mit.mobile.android.appupdater.R;
 import edu.mit.mobile.android.utils.StreamUtils;
 
-// TODO figure out how to extract strings
 /**
  * A fairly simple non-Market app update checker. Give it a URL pointing to a JSON file
  * and it will compare its version (from the manifest file) to the versions listed in the JSON.
@@ -77,11 +75,17 @@ import edu.mit.mobile.android.utils.StreamUtils;
 }
  * </pre>
  *
- * @author Steve Pomeroy
+ * @author <a href="mailto:spomeroy@mit.edu">Steve Pomeroy</a>
  *
  */
-public class AppUpdateChecker extends Service {
+public class AppUpdateChecker {
 	private final static String TAG = AppUpdateChecker.class.getSimpleName();
+
+	public static final String SHARED_PREFERENCES_NAME = "edu.mit.mobile.android.appupdater.preferences";
+	public static final String
+		PREF_ENABLED = "enabled",
+		PREF_MIN_INTERVAL = "min_interval",
+		PREF_LAST_UPDATED = "last_checked";
 
 	private final String mVersionListUrl;
 	private int currentAppVersion;
@@ -90,6 +94,9 @@ public class AppUpdateChecker extends Service {
 	private final Context mContext;
 
 	private final OnAppUpdateListener mUpdateListener;
+	private SharedPreferences mPrefs;
+
+	private static final int MILLISECONDS_IN_MINUTE = 60000;
 
 	/**
 	 * @param context
@@ -100,26 +107,64 @@ public class AppUpdateChecker extends Service {
 		mContext = context;
 		mVersionListUrl = versionListUrl;
 		mUpdateListener = updateListener;
+
     	try {
 			currentAppVersion = context.getPackageManager().getPackageInfo(context.getPackageName(), 0).versionCode;
 		} catch (final NameNotFoundException e) {
 			Log.e(TAG, "Cannot get version for self! Who am I?! What's going on!? I'm so confused :-(");
 			return;
 		}
+
+		mPrefs = context.getSharedPreferences(SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE);
+		// defaults are kept in the preference file for ease of tweaking
+		// TODO put this on a thread somehow
+		PreferenceManager.setDefaultValues(mContext, SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE, R.xml.preferences, false);
     }
-
-
-	@Override
-	public IBinder onBind(Intent intent) {
-		// TODO Auto-generated method stub
-		return null;
-	}
 
 	public static interface OnAppUpdateListener {
 		public void appUpdateStatus(boolean isLatestVersion, String latestVersionName, List<String> changelog, Uri downloadUrl);
 	}
 
-    public void checkForUpdates(){
+	// min interval is stored as a string so a preference editor could potentially edit it using a text edit widget
+
+	public int getMinInterval(){
+		return Integer.valueOf(mPrefs.getString(PREF_MIN_INTERVAL, "60"));
+	}
+
+	public void setMinInterval(int minutes){
+		mPrefs.edit().putString(PREF_MIN_INTERVAL, String.valueOf(minutes)).commit();
+	}
+
+	public boolean getEnabled(){
+		return mPrefs.getBoolean(PREF_ENABLED, true);
+	}
+
+	public void setEnabled(boolean enabled){
+		mPrefs.edit().putBoolean(PREF_ENABLED, enabled).commit();
+	}
+
+	/**
+	 * You normally shouldn't need to call this, as {@link #checkForUpdates()} checks it before doing any updates.
+	 *
+	 * @return true if the updater should check for updates
+	 */
+	public boolean isStale(){
+		return System.currentTimeMillis() - mPrefs.getLong(PREF_LAST_UPDATED, 0) > getMinInterval() * MILLISECONDS_IN_MINUTE;
+	}
+
+	/**
+	 * Checks for updates if updates haven't been checked for recently and if checking is enabled.
+	 */
+	public void checkForUpdates(){
+    	if (mPrefs.getBoolean(PREF_ENABLED, true) && isStale()){
+    		forceCheckForUpdates();
+    	}
+	}
+
+    /**
+     * Checks for updates regardless of when the last check happened or if checking for updates is enabled.
+     */
+    public void forceCheckForUpdates(){
     	Log.d(TAG, "checking for updates...");
     	if (versionTask == null){
     		versionTask = new GetVersionJsonTask();
@@ -188,8 +233,6 @@ public class AppUpdateChecker extends Service {
 
     		}
     	}
-
-
 
     	private final DialogInterface.OnClickListener dialogOnClickListener = new DialogInterface.OnClickListener() {
 
@@ -261,7 +304,6 @@ public class AppUpdateChecker extends Service {
     	mUpdateListener.appUpdateStatus(false, latestVersionName, changelog, downloadUri);
     }
 
-
     private class VersionCheckException extends Exception {
     	/**
 		 *
@@ -299,7 +341,8 @@ public class AppUpdateChecker extends Service {
 		protected JSONObject doInBackground(String... params) {
 			publishProgress(0);
 			final DefaultHttpClient hc = new DefaultHttpClient();
-			final HttpGet req = new HttpGet(params[0]);
+			final String url = params[0];
+			final HttpGet req = new HttpGet(url);
 			JSONObject jo = null;
 			try {
 				publishProgress(50);
@@ -308,7 +351,7 @@ public class AppUpdateChecker extends Service {
 				final StatusLine status = res.getStatusLine();
 				final int statusCode = status.getStatusCode();
 				if (statusCode == HttpStatus.SC_NOT_FOUND) {
-					throw new VersionCheckException(status.getReasonPhrase());
+					throw new VersionCheckException(url + " " + status.getReasonPhrase());
 				}
 				if (statusCode != HttpStatus.SC_OK){
 					final HttpEntity e = res.getEntity();
@@ -323,11 +366,12 @@ public class AppUpdateChecker extends Service {
 
 				jo = new JSONObject(StreamUtils.inputStreamToString(ent.getContent()));
 				ent.consumeContent();
+				mPrefs.edit().putLong(PREF_LAST_UPDATED, System.currentTimeMillis()).commit();
 
 			} catch (final Exception e) {
-				e.printStackTrace();
+				//e.printStackTrace();
 
-				errorMsg = e.getClass().getName() + ": " + e.getLocalizedMessage();
+				errorMsg = e.getClass().getSimpleName() + ": " + e.getLocalizedMessage();
 			}finally {
 				publishProgress(100);
 			}
@@ -341,6 +385,7 @@ public class AppUpdateChecker extends Service {
 			}else{
 				try {
 					triggerFromJson(result);
+
 				} catch (final JSONException e) {
 					Log.e(TAG, "Error in JSON version file.", e);
 				}
