@@ -1,11 +1,11 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2.7
 
 import json, sys
 import urllib2
 import rfc822, datetime, time
 import os
 
-from optparse import OptionParser, OptionGroup
+import argparse
 
 DOWNLOAD_URL = 'downloadUrl'
 PACKAGE = 'package'
@@ -77,7 +77,12 @@ class VersionList:
 
         return (True, None)
 
-    def download_url(self):
+    def download_url(self, url=None):
+        if url:
+            if not self.package:
+                self.package = {}
+            self.package[DOWNLOAD_URL] = url
+
         return self.package[DOWNLOAD_URL]
 
     def version_latest(self):
@@ -96,7 +101,10 @@ class VersionList:
     def verify_online(self):
         url = self.download_url()
 
-        res = urllib2.urlopen(HeadRequest(url))
+        try:
+            res = urllib2.urlopen(HeadRequest(url))
+        except urllib2.HTTPError as e:
+            return (False, e)
 
         if res.code != 200:
             return (False, "%d %s" % (res.code, res.msg))
@@ -107,13 +115,13 @@ class VersionList:
         if APK_CONTENT_TYPE != content_type:
             sys.stderr.writelines("warning: content type returned by %s should be %s, not %s\n" % (url, APK_CONTENT_TYPE, content_type))
 
-        last_modified = res.headers['last-modified']
+        last_modified = res.headers.get('last-modified', None)
         if last_modified:
             last_modified = datetime.datetime.fromtimestamp(time.mktime(rfc822.parsedate(last_modified)))
         sys.stderr.writelines("last modified %s\n" % last_modified)
 
-        size = res.headers['content-length']
-        if size < 4000:
+        size = res.headers.get('content-length', None)
+        if size and size < 4000:
             return (False, "content length of %s was less than 4k." % url)
 
         res.close()
@@ -130,82 +138,80 @@ class VersionList:
             self.versions = {}
         if ver_name in self.versions.keys():
             raise VersionListException("version '%s' already exists" % ver_name)
-        self.versions[ver_name] = {VERSION_CODE: int(ver_code), CHANGELOG: changelog}
-        
+        ver_code = int(ver_code)
+        if ver_code in map(lambda v: v[VERSION_CODE], self.versions.values()):
+            raise VersionListException("version code '%d' already exists" % ver_code)
+        self.versions[ver_name] = {VERSION_CODE: ver_code, CHANGELOG: changelog}
+
+def release_cmd(args):
+    if args.filename:
+        try:
+            inpt = open(args.filename)
+        except IOError as e:
+            # this is not ideal according to http://docs.python.org/howto/doanddont.html
+            # but there's no good way to determine if it's a "file not found" or other error
+            # based on the exception alone
+            if not os.path.exists(args.filename):
+                inpt = None
+            else:
+                raise e
+
+        ver = VersionList(inpt)
+        if inpt:
+            ver.verify()
+    else:
+        ver = VersionList(sys.stdin)
+        ver.verify()
+
+    try:
+        ver.add_release(args.code, args.name, args.changelog)
+        if args.url:
+            ver.download_url(args.url)
+        if args.filename:
+            out = open(args.filename, 'w')
+        else:
+            out = sys.stdout
+        ver.write_json(out)
+    except VersionListException as e:
+        sys.stderr.writelines("%s\n" % e)
+
+def verify_cmd(args):
+    if args.filename:
+        inpt = open(args.filename)
+    else:
+        inpt = sys.stdin
+    ver = VersionList(inpt)
+    (res, err) = ver.verify(online=args.online)
+    if res:
+        print "verification succeeded: no errors found"
+        latest, latest_info = ver.version_latest()
+        print "Latest version is %s (%d)" % (latest, latest_info[VERSION_CODE])
+    else:
+        print "verification failed: %s" % err
 
 if __name__=='__main__':
-    parser = OptionParser(usage="usage: %prog [-f JSON_FILE] [options] COMMAND [args]",
-            description="Generate or update a static json AppUpdateChecker file."
-            "\t\t\t\tCOMMAND is one of:\t\t\t\t\t\t\t\t"
-            "verify\t\t\t\t\t\tverify the given JSON_FILE"
-            "\t\t\t\trelease\tCODE NAME 'CHANGELOG' ['CHANGELOG']\t\tadds a new release")
+    parser = argparse.ArgumentParser(
+            description="Generate or update a static json AppUpdateChecker file.")
 
-
-    parser.add_option("-f", "--file", dest="filename",
+    parser.add_argument("-f", "--file", dest="filename",
             help="read/write version information to FILE", metavar="FILE")
 
-    parser.add_option("-d", "--verify-download", dest="online", action="store_true",
+    subparsers = parser.add_subparsers(help='sub-command help')
+
+    verify = subparsers.add_parser('verify', help="verify the document")
+    release = subparsers.add_parser('release', help="add a new release")
+
+    verify.add_argument("-d", "--verify-download", dest="online", action="store_true",
             help="when verifying, perform a HEAD request on the download URL to ensure it is valid")
 
-    cmds = OptionGroup(parser, "Commands", "Commands have 0 or more arguments test")
+    verify.set_defaults(func=verify_cmd)
 
-    parser.add_option_group(cmds)
+    release.add_argument("-u", "--url", dest="url", help="set/update download URL")
 
-    (options, args) = parser.parse_args()
+    release.add_argument('code', help='integer version code')
+    release.add_argument('name', help='a unique name for the release')
+    release.add_argument('changelog', help='changelog entries', nargs='+')
+    release.set_defaults(func=release_cmd)
 
-    if len(args) < 1:
-        parser.print_help()
-        sys.exit(1)
-
-    cmd = args[0]
-
-    if 'verify' == cmd:
-        if options.filename:
-            inpt = open(options.filename)
-        else:
-            inpt = sys.stdin
-        ver = VersionList(inpt)
-        (res, err) = ver.verify(online=options.online)
-        if res:
-            print "verification succeeded: no errors found"
-            latest, latest_info = ver.version_latest()
-            print "Latest version is %s (%d)" % (latest, latest_info[VERSION_CODE])
-        else:
-            print "verification failed: %s" % err
-        
-    elif 'release' == cmd:
-        if len(args) < 3:
-            parser.print_help()
-            sys.exit(1)
-
-        if options.filename:
-            try:
-                inpt = open(options.filename)
-            except IOError as e:
-                # this is not ideal according to http://docs.python.org/howto/doanddont.html
-                # but there's no good way to determine if it's a "file not found" or other error
-                # based on the exception alone
-                if not os.path.exists(options.filename):
-                    inpt = None
-                else:
-                    raise e
-
-            ver = VersionList(inpt)
-            if inpt:
-                ver.verify()
-            
-        else:
-            ver = VersionList(sys.stdin)
-            ver.verify()
-
-        ver_code = args[1]
-        ver_name = args[2]
-        changelog = args[3:]
-        try:
-            ver.add_release(ver_code, ver_name, changelog)
-            if options.filename:
-                out = open(options.filename, 'w')
-            ver.write_json(out)
-        except VersionListException as e:
-            sys.stderr.writelines("%s\n" % e)
-
+    args = parser.parse_args()
+    args.func(args)
