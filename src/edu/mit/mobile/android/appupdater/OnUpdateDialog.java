@@ -10,7 +10,6 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Message;
-import edu.mit.mobile.android.appupdater.AppUpdateChecker.OnAppUpdateListener;
 
 /**
  * A handy pop-up dialog box which lists the changelog and asks if you want to update.

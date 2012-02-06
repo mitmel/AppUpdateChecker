@@ -20,7 +20,6 @@ package edu.mit.mobile.android.appupdater;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
-import java.util.List;
 import java.util.Map.Entry;
 import java.util.TreeMap;
 
@@ -116,10 +115,6 @@ public class AppUpdateChecker {
 		// TODO put this on a thread somehow
 		PreferenceManager.setDefaultValues(mContext, SHARED_PREFERENCES_NAME, Context.MODE_PRIVATE, R.xml.preferences, false);
     }
-
-	public static interface OnAppUpdateListener {
-		public void appUpdateStatus(boolean isLatestVersion, String latestVersionName, List<String> changelog, Uri downloadUrl);
-	}
 
 	// min interval is stored as a string so a preference editor could potentially edit it using a text edit widget
 
