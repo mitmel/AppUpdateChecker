@@ -32,6 +32,16 @@ The JSON format looks like this:
         }
     }
 
+Publishing steps
+----------------
+
+1. point the app updater to a URL you control (in the strings.xml file)
+2. upload apk to server
+3. generate the json document that the app updater looks at which contains information about the release. There's a python script that can generate such documents in the app updater's source.
+4. publish the json document at the URL in step 1
+5. every time the app starts, it'll check to see if there's an update to that json file. It has a backoff threshhold that's set compile time for the app updater so it won't check it if it already checked it within N minutes.
+
+
 License
 =======
 
